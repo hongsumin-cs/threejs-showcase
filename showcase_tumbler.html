@@ -1,0 +1,707 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Straw Tumbler 6</title>
+  <style>
+    html, body { margin: 0; height: 100%; overflow: hidden; background: #e7e7ea; }
+    canvas { display: block; width: 100vw; height: 100vh; touch-action: none; }
+
+    /* ───────── 색상 선택 ───────── */
+    .color-picker {
+      position: fixed; right: 16px; bottom: 16px;
+      max-width: calc(100vw - 32px); box-sizing: border-box;
+      padding: 12px 14px;
+      background: rgba(255, 255, 255, 0.82);
+      backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px);
+      border-radius: 14px;
+      box-shadow: 0 2px 12px rgba(0, 0, 0, 0.08);
+      font: 13px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif;
+      color: #3a3a3e;
+      user-select: none;
+    }
+    .color-picker__label { margin: 0 0 10px; font-weight: 500; }
+    .color-picker__label span { font-weight: 600; }
+    .color-picker__swatches {
+      display: flex; flex-wrap: wrap; gap: 10px;
+      margin: 0; padding: 0; list-style: none;
+    }
+    .swatch {
+      width: 28px; height: 28px; padding: 0; border: 0; border-radius: 50%;
+      background: var(--swatch);
+      box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.14);
+      cursor: pointer;
+      transition: transform 0.15s ease;
+    }
+    .swatch:hover { transform: scale(1.08); }
+    .swatch:focus-visible { outline: 2px solid #5b8def; outline-offset: 3px; }
+    .swatch[aria-pressed="true"] {
+      box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.14), 0 0 0 2px #ffffff, 0 0 0 4px #3a3a3e;
+    }
+
+    /* ───────── 제품 소개 (왼쪽 위, 상자 없이 배경 위에 바로) ───────── */
+    .intro {
+      position: fixed; top: 36px; left: 40px;
+      max-width: min(340px, calc(50vw - 200px));
+      font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+      color: #2b2b2f;
+      pointer-events: none;   /* 글자 위에서도 드래그로 제품을 둘러볼 수 있게 이벤트를 캔버스로 통과 */
+      user-select: none;
+    }
+    .intro__name {
+      margin: 0;
+      font-size: clamp(24px, 3.4vw, 40px); font-weight: 700;
+      line-height: 1.15; letter-spacing: -0.02em;
+      word-break: keep-all;
+    }
+    .intro__color {
+      display: flex; align-items: center; gap: 8px;
+      margin: 8px 0 0;
+      font-size: 15px; font-weight: 500; color: #55555a;
+    }
+    .intro__color-dot {
+      width: 10px; height: 10px; border-radius: 50%;
+      background: var(--dot, #F1EEE6);
+      box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.18);
+    }
+    .intro__desc {
+      margin: 18px 0 0;
+      font-size: 15px; line-height: 1.6; color: #45454a;
+      word-break: keep-all;
+    }
+    .intro__hint {
+      margin: 14px 0 0;
+      font-size: 12px; color: #86868c;
+    }
+    /* 화면이 좁으면 설명은 숨기고 여백을 줄임 */
+    @media (max-width: 900px) {
+      .intro { top: 20px; left: 16px; max-width: calc(100vw - 32px); }
+      .intro__desc { display: none; }
+      .intro__hint { margin-top: 8px; }
+    }
+  </style>
+  <script type="importmap">
+    {
+      "imports": {
+        "three": "https://cdn.jsdelivr.net/npm/three@0.180.0/build/three.module.js",
+        "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.180.0/examples/jsm/"
+      }
+    }
+  </script>
+</head>
+<body>
+  <header class="intro">
+    <h1 class="intro__name">스트로우 텀블러</h1>
+    <p class="intro__color"><span class="intro__color-dot" id="intro-color-dot"></span><span id="intro-color-name"></span></p>
+    <p class="intro__desc">버튼 하나로 열리는 원터치 텀블러.<br />한 손으로 열고 바로 마실 수 있습니다.</p>
+    <p class="intro__hint">흰색 버튼을 눌러 열어 보세요.</p>
+  </header>
+
+  <div class="color-picker" role="group" aria-labelledby="color-label">
+    <p class="color-picker__label" id="color-label">색상: <span id="color-name"></span></p>
+    <ul class="color-picker__swatches" id="swatches"></ul>
+  </div>
+
+  <script type="module">
+    // ───────── 동작 설정: 흰 버튼을 누르면 열림 / 다시 누르면 닫힘 ─────────
+    // 진행도 0(닫힘) → 1(열림). 각 부품은 자기 구간에서만 움직인다.
+    // 열릴 때: 뚜껑 → 빨대 순 / 닫힐 때: 빨대 → 뚜껑 순 (진행도가 거꾸로 흐르므로 자동으로 역순)
+    const ACTION = {
+      duration: 0.9,              // 진행도 0 → 1 에 걸리는 시간 (초)
+      flapAngleDeg: 110,          // 뚜껑이 젖혀지는 각도 (도)
+      flapRange: [0.0, 0.6],      // 뚜껑이 움직이는 진행도 구간
+      strawRise: 0.85,            // 빨대가 올라오는 거리
+      strawRange: [0.45, 1.0],    // 빨대가 움직이는 진행도 구간
+      buttonPressDepth: 0.022,    // 버튼이 눌려 들어가는 깊이
+      buttonPressTime: 0.22,      // 버튼이 눌렸다 돌아오는 시간 (초)
+      dragThreshold: 5,           // 이 거리(px) 넘게 움직이면 드래그로 보고 클릭 무시
+    };
+
+    // ───────── 색상 목록: 한 줄 추가하면 버튼도 하나 늘어남 (첫 번째가 기본색) ─────────
+    const COLORS = [
+      { name: '아이보리', hex: '#F1EEE6' },
+      { name: '버터',     hex: '#E6C966' },
+      { name: '코랄',     hex: '#DD8274' },
+      { name: '스카이',   hex: '#85B7D4' },
+      { name: '세이지',   hex: '#7E9273' },
+      { name: '차콜',     hex: '#3A3D40' },
+    ];
+
+    import * as THREE from 'three';
+    import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+    import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
+    import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
+
+    // ───────── 렌더러 / 씬 / 카메라 ─────────
+    const renderer = new THREE.WebGLRenderer({ antialias: true });
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    renderer.outputColorSpace = THREE.SRGBColorSpace;
+    renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    renderer.toneMappingExposure = 0.95;
+    renderer.shadowMap.enabled = true;
+    renderer.shadowMap.type = THREE.PCFShadowMap;
+    document.body.appendChild(renderer.domElement);
+
+    const scene = new THREE.Scene();
+    scene.background = new THREE.Color('#e7e7ea');
+
+    // 스튜디오 반사용 환경맵 (외부 파일 없이 RoomEnvironment로 생성)
+    const pmrem = new THREE.PMREMGenerator(renderer);
+    scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
+    scene.environmentIntensity = 0.55;
+
+    const camera = new THREE.PerspectiveCamera(35, window.innerWidth / window.innerHeight, 0.1, 100);
+    camera.position.set(4.8, 3.9, 6.6);
+
+    const controls = new OrbitControls(camera, renderer.domElement);
+    controls.target.set(0, 1.4, 0);
+    controls.enableDamping = true;
+    controls.dampingFactor = 0.08;
+    controls.enablePan = false;
+    controls.minDistance = 3.5;
+    controls.maxDistance = 14;
+    controls.maxPolarAngle = Math.PI * 0.495; // 바닥 아래로 내려가지 않게
+    controls.update();
+
+    // ───────── 조명 ─────────
+    // 시작 시점의 카메라 기준 방향(오른쪽 / 위 / 관찰자 쪽)으로 조명 위치를 계산한다.
+    // 이후 카메라를 돌려도 조명은 월드에 고정된다.
+    camera.updateMatrixWorld();
+    const camRight = new THREE.Vector3(1, 0, 0).applyQuaternion(camera.quaternion).setY(0).normalize();
+    const camToward = camera.position.clone().sub(controls.target).setY(0).normalize();
+    const lightPos = (right, up, toward) => controls.target.clone()
+      .addScaledVector(camRight, right)
+      .add(new THREE.Vector3(0, up, 0))
+      .addScaledVector(camToward, toward);
+
+    scene.add(new THREE.HemisphereLight('#ffffff', '#c9c6c0', 0.7));
+
+    // 키 라이트: 관찰자 시점의 왼쪽 위
+    const keyLight = new THREE.DirectionalLight('#fffaf2', 1.8);
+    keyLight.position.copy(lightPos(-4.5, 6.5, 2.5));
+    keyLight.castShadow = true;
+    keyLight.shadow.mapSize.set(2048, 2048);
+    keyLight.shadow.camera.left = -3.2;
+    keyLight.shadow.camera.right = 3.2;
+    keyLight.shadow.camera.top = 3.2;
+    keyLight.shadow.camera.bottom = -3.2;
+    keyLight.shadow.camera.near = 1;
+    keyLight.shadow.camera.far = 20;
+    keyLight.shadow.radius = 10;
+    keyLight.shadow.bias = -0.0004;
+    keyLight.shadow.normalBias = 0.02;
+    scene.add(keyLight);
+
+    // 보조광: 관찰자 시점의 오른쪽 아래쪽에서 약하게
+    const fillLight = new THREE.DirectionalLight('#f4f1ff', 0.55);
+    fillLight.position.copy(lightPos(5, 2.5, 2));
+    scene.add(fillLight);
+
+    // 림 라이트: 뒤쪽 윤곽
+    const rimLight = new THREE.DirectionalLight('#ffffff', 0.7);
+    rimLight.position.copy(lightPos(-1, 4, -6));
+    scene.add(rimLight);
+
+    // 바닥: 그림자만 받는 투명 평면
+    const floor = new THREE.Mesh(
+      new THREE.PlaneGeometry(40, 40),
+      new THREE.ShadowMaterial({ color: '#000000', opacity: 0.11 })
+    );
+    floor.name = 'floor';
+    floor.rotation.x = -Math.PI / 2;
+    floor.receiveShadow = true;
+    scene.add(floor);
+
+    // ───────── 치수 ─────────
+    // 정면 = +Z, 정면에서 봤을 때 오른쪽 = +X, 위 = +Y
+    const BODY_H = 2.55;    // 몸통 높이
+    const R_TOP = 0.95;     // 몸통 위쪽 반경
+    const R_BOT = 0.78;     // 몸통 아래쪽 반경 (살짝 좁아지는 형태)
+    const WALL = 0.05;      // 벽 두께
+    const FLOOR_T = 0.12;   // 바닥 두께
+
+    const BAND_Y0 = BODY_H - 0.005;   // 메탈 이음부
+    const BAND_H = 0.12;
+    const BAND_Y1 = BAND_Y0 + BAND_H;
+    const R_BAND = R_TOP + 0.012;
+
+    const CAP_Y0 = BAND_Y1;           // 최상부 캡 (고정)
+    const CAP_TOP = 2.82;
+    const R_CAP = R_TOP + 0.004;
+    const HOLE_R = 0.085;             // 빨대 구멍
+    const BOSS_R = 0.13;              // 빨대 구멍 둘레의 돌출부
+    const BOSS_H = 0.045;             // 돌출부 높이 (캡 윗면 기준)
+    const STRAW_Z = 0.26;             // 빨대 구멍 위치 (중심에서 앞쪽으로)
+
+    const FLAP_W = 0.68;              // 둥근 직사각형 뚜껑 (X 방향 폭)
+    const FLAP_D = 0.95;              // (Z 방향 길이)
+    const FLAP_WALL_H = 0.1;
+    const FLAP_BACK_Z = -0.16;        // 뚜껑 뒤쪽 가장자리 (빨대 위치에 맞춰 앞쪽으로)
+
+    const BUTTON_SIZE = 0.22;
+    const BEZEL_MARGIN = 0.032;       // 버튼 둘레 메탈 테두리 두께
+    const BUTTON_GAP = 0.008;         // 버튼과 테두리 사이 틈
+    // 테두리 윗변이 이음부 윗선과 맞도록 버튼 높이를 정함
+    const BUTTON_Y = BAND_Y1 - BEZEL_MARGIN - BUTTON_GAP - BUTTON_SIZE / 2;
+    const HINGE_Y = CAP_TOP + 0.04;   // 뚜껑 경첩 축
+    const HINGE_Z = FLAP_BACK_Z - 0.03;
+
+    // 원호 점 생성 헬퍼 (LatheGeometry 프로파일용)
+    function arc(cx, cy, r, a0, a1, steps = 6) {
+      const pts = [];
+      for (let i = 0; i <= steps; i++) {
+        const a = a0 + (a1 - a0) * (i / steps);
+        pts.push(new THREE.Vector2(cx + r * Math.cos(a), cy + r * Math.sin(a)));
+      }
+      return pts;
+    }
+    const outerR = (y) => R_BOT + (R_TOP - R_BOT) * (y / BODY_H);
+    const innerR = (y) => outerR(y) - WALL;
+
+    // 둥근 직사각형 Shape (x: 중심 cx, y: 중심 cy)
+    function roundedRect(w, h, r, cx = 0, cy = 0) {
+      const s = new THREE.Shape();
+      const x0 = cx - w / 2, x1 = cx + w / 2, y0 = cy - h / 2, y1 = cy + h / 2;
+      s.moveTo(x0 + r, y0);
+      s.lineTo(x1 - r, y0);
+      s.quadraticCurveTo(x1, y0, x1, y0 + r);
+      s.lineTo(x1, y1 - r);
+      s.quadraticCurveTo(x1, y1, x1 - r, y1);
+      s.lineTo(x0 + r, y1);
+      s.quadraticCurveTo(x0, y1, x0, y1 - r);
+      s.lineTo(x0, y0 + r);
+      s.quadraticCurveTo(x0, y0, x0 + r, y0);
+      return s;
+    }
+
+    // ───────── 재질 ─────────
+    const materials = {
+      // 몸통·손잡이: 색상 선택으로 바뀌는 부품
+      body: new THREE.MeshStandardMaterial({ name: 'bodyMat', color: COLORS[0].hex, roughness: 0.42, metalness: 0.0 }),
+      handle: new THREE.MeshStandardMaterial({ name: 'handleMat', color: COLORS[0].hex, roughness: 0.42, metalness: 0.0 }),
+      // 뚜껑: 기본 아이보리로 고정 (색 변경 대상 아님)
+      flap: new THREE.MeshStandardMaterial({ name: 'flapMat', color: '#F1EEE6', roughness: 0.42, metalness: 0.0 }),
+      cap: new THREE.MeshStandardMaterial({ name: 'capMat', color: '#f8f6f1', roughness: 0.38, metalness: 0.0 }),
+      band: new THREE.MeshStandardMaterial({ name: 'bandMat', color: '#d4d6db', roughness: 0.22, metalness: 1.0 }),
+      button: new THREE.MeshStandardMaterial({ name: 'buttonMat', color: '#ffffff', roughness: 0.3, metalness: 0.0 }),
+      pin: new THREE.MeshStandardMaterial({ name: 'pinMat', color: '#b9b9bd', roughness: 0.25, metalness: 0.9 }),
+      straw: new THREE.MeshStandardMaterial({
+        name: 'strawMat', color: '#f4f2ee', roughness: 0.18, metalness: 0.0,
+        transparent: true, opacity: 0.7
+      })
+    };
+
+    function makeMesh(name, geometry, material) {
+      const mesh = new THREE.Mesh(geometry, material);
+      mesh.name = name;
+      mesh.castShadow = true;
+      mesh.receiveShadow = true;
+      return mesh;
+    }
+
+    const tumbler = new THREE.Group();
+    tumbler.name = 'tumbler';
+    scene.add(tumbler);
+
+    // ───────── 몸통 (고정) ─────────
+    {
+      const p = [];
+      p.push(new THREE.Vector2(0, 0));
+      p.push(...arc(R_BOT - 0.06, 0.06, 0.06, -Math.PI / 2, 0));                 // 바깥 바닥 모서리
+      for (let i = 1; i <= 10; i++) {                                              // 바깥 벽
+        const y = 0.06 + (BODY_H - WALL / 2 - 0.06) * (i / 10);
+        p.push(new THREE.Vector2(outerR(y), y));
+      }
+      p.push(...arc(R_TOP - WALL / 2, BODY_H - WALL / 2, WALL / 2, 0, Math.PI, 8).slice(1));
+      for (let i = 1; i <= 10; i++) {                                              // 안쪽 벽
+        const y = BODY_H - WALL / 2 - (BODY_H - WALL / 2 - FLOOR_T - 0.05) * (i / 10);
+        p.push(new THREE.Vector2(innerR(y), y));
+      }
+      const fx = innerR(FLOOR_T) - 0.05;
+      p.push(...arc(fx, FLOOR_T + 0.05, 0.05, 0, -Math.PI / 2).slice(1));
+      p.push(new THREE.Vector2(0, FLOOR_T));
+
+      tumbler.add(makeMesh('body', new THREE.LatheGeometry(p, 96), materials.body));
+    }
+
+    // ───────── 손잡이: 모서리가 둥근 ㄷ자, 정면 기준 오른쪽(+X) ─────────
+    {
+      const handleGroup = new THREE.Group();
+      handleGroup.name = 'handleGroup';
+      tumbler.add(handleGroup);
+
+      const Y_TOP = 2.2, Y_BOT = 0.75;   // 위·아래 팔 높이
+      const X_GRIP = 1.5;                // 세로 손잡이 위치
+      const RC = 0.2;                    // 꺾이는 모서리 반경
+      const x0Top = outerR(Y_TOP) - 0.04, x0Bot = outerR(Y_BOT) - 0.04;
+      const v = (x, y) => new THREE.Vector3(x, y, 0);
+
+      const path = new THREE.CurvePath();
+      path.add(new THREE.LineCurve3(v(x0Top, Y_TOP), v(X_GRIP - RC, Y_TOP)));
+      path.add(new THREE.QuadraticBezierCurve3(v(X_GRIP - RC, Y_TOP), v(X_GRIP, Y_TOP), v(X_GRIP, Y_TOP - RC)));
+      path.add(new THREE.LineCurve3(v(X_GRIP, Y_TOP - RC), v(X_GRIP, Y_BOT + RC)));
+      path.add(new THREE.QuadraticBezierCurve3(v(X_GRIP, Y_BOT + RC), v(X_GRIP, Y_BOT), v(X_GRIP - RC, Y_BOT)));
+      path.add(new THREE.LineCurve3(v(X_GRIP - RC, Y_BOT), v(x0Bot, Y_BOT)));
+
+      const handle = makeMesh('handle', new THREE.TubeGeometry(path, 240, 0.075, 28, false), materials.handle);
+      handleGroup.add(handle);
+
+      // 몸통과 만나는 부분의 받침
+      for (const [name, y] of [['handleMountTop', Y_TOP], ['handleMountBottom', Y_BOT]]) {
+        const mount = makeMesh(name, new THREE.CylinderGeometry(0.12, 0.13, 0.06, 40), materials.handle);
+        mount.rotation.z = -Math.PI / 2;
+        mount.position.set(outerR(y) + 0.01, y, 0);
+        handleGroup.add(mount);
+      }
+    }
+
+    // ───────── 메탈 이음부 (몸통과 캡 사이 띠) ─────────
+    {
+      const p = [];
+      p.push(new THREE.Vector2(R_TOP - 0.08, BAND_Y0));
+      p.push(...arc(R_BAND - 0.015, BAND_Y0 + 0.015, 0.015, -Math.PI / 2, 0));
+      p.push(...arc(R_BAND - 0.015, BAND_Y1 - 0.015, 0.015, 0, Math.PI / 2));
+      p.push(new THREE.Vector2(R_TOP - 0.08, BAND_Y1));
+      tumbler.add(makeMesh('band', new THREE.LatheGeometry(p, 96), materials.band));
+    }
+
+    // ───────── 최상부 캡 (고정, 흰색에 가까운 색, 앞쪽으로 치우친 빨대 구멍) ─────────
+    {
+      const capH = CAP_TOP - CAP_Y0;
+      const R_FLAT = R_CAP - 0.06;     // 윗면 평평한 영역 반경
+
+      // 둥근 가장자리 (회전체)
+      const p = [];
+      p.push(new THREE.Vector2(R_FLAT, CAP_Y0));
+      p.push(...arc(R_CAP - 0.02, CAP_Y0 + 0.02, 0.02, -Math.PI / 2, 0));
+      p.push(...arc(R_FLAT, CAP_TOP - 0.06, 0.06, 0, Math.PI / 2, 8));
+      tumbler.add(makeMesh('capRim', new THREE.LatheGeometry(p, 96), materials.cap));
+
+      // 윗판 (구멍이 중심에서 벗어나 있어 Extrude로 생성, Shape 평면의 y = -z)
+      const plateShape = new THREE.Shape();
+      plateShape.absarc(0, 0, R_FLAT, 0, Math.PI * 2, false);
+      const hole = new THREE.Path();
+      hole.absarc(0, -STRAW_Z, HOLE_R + 0.003, 0, Math.PI * 2, true);
+      plateShape.holes.push(hole);
+      const plateGeo = new THREE.ExtrudeGeometry(plateShape, { depth: capH, bevelEnabled: false, curveSegments: 64 });
+      plateGeo.rotateX(-Math.PI / 2);
+      const plate = makeMesh('capPlate', plateGeo, materials.cap);
+      plate.position.y = CAP_Y0;
+      tumbler.add(plate);
+
+      // 빨대 구멍 둘레 돌출부 (원점 = 구멍 중심, 캡 윗면 높이)
+      const b = [];
+      b.push(...arc(BOSS_R + 0.015, 0.015, 0.015, -Math.PI / 2, -Math.PI));
+      b.push(...arc(BOSS_R - 0.012, BOSS_H - 0.012, 0.012, 0, Math.PI / 2));
+      b.push(...arc(HOLE_R + 0.01, BOSS_H - 0.01, 0.01, Math.PI / 2, Math.PI));
+      b.push(new THREE.Vector2(HOLE_R, -capH));
+      const boss = makeMesh('capSpout', new THREE.LatheGeometry(b, 48), materials.cap);
+      boss.position.set(0, CAP_TOP, STRAW_Z);
+      tumbler.add(boss);
+
+      // 캡 쪽 경첩 (고정)
+      const capHinge = new THREE.Group();
+      capHinge.name = 'capHinge';
+      tumbler.add(capHinge);
+      for (const side of [-1, 1]) {
+        const tag = side < 0 ? 'L' : 'R';
+        const support = makeMesh('capHingeSupport' + tag, new RoundedBoxGeometry(0.1, 0.06, 0.09, 2, 0.02), materials.cap);
+        support.position.set(side * 0.16, CAP_TOP + 0.015, HINGE_Z);
+        capHinge.add(support);
+        const knuckle = makeMesh('capHingeKnuckle' + tag, new THREE.CylinderGeometry(0.035, 0.035, 0.1, 24), materials.cap);
+        knuckle.rotation.z = Math.PI / 2;
+        knuckle.position.set(side * 0.16, HINGE_Y, HINGE_Z);
+        capHinge.add(knuckle);
+      }
+      const pin = makeMesh('hingePin', new THREE.CylinderGeometry(0.012, 0.012, 0.42, 12), materials.pin);
+      pin.rotation.z = Math.PI / 2;
+      pin.position.set(0, HINGE_Y, HINGE_Z);
+      capHinge.add(pin);
+    }
+
+    // ───────── 둥근 직사각형 뚜껑 (원점 = 뒤쪽 경첩 축, X축 회전) ─────────
+    const flapPivot = new THREE.Group();
+    flapPivot.name = 'flapPivot';
+    flapPivot.position.set(0, HINGE_Y, HINGE_Z);
+    tumbler.add(flapPivot);
+    {
+      const r = 0.16;
+      const zBack = FLAP_BACK_Z - HINGE_Z;         // 경첩 기준 뒤쪽 가장자리 (= 0.03)
+      const cy = -(zBack + FLAP_D / 2);            // Shape 평면의 y = -z
+      const yBase = CAP_TOP - HINGE_Y;             // 뚜껑 바닥 = 캡 윗면
+
+      // 옆벽 (속이 빈 둥근 직사각형 테두리)
+      const ring = roundedRect(FLAP_W, FLAP_D, r, 0, cy);
+      ring.holes.push(roundedRect(FLAP_W - 0.07, FLAP_D - 0.07, r - 0.035, 0, cy));
+      const wallGeo = new THREE.ExtrudeGeometry(ring, { depth: FLAP_WALL_H, bevelEnabled: false, curveSegments: 12 });
+      wallGeo.rotateX(-Math.PI / 2);
+      const wall = makeMesh('flapWall', wallGeo, materials.flap);
+      wall.position.y = yBase;
+      flapPivot.add(wall);
+
+      // 윗판 (모서리 둥글게 베벨)
+      const bevel = 0.015;
+      const topGeo = new THREE.ExtrudeGeometry(
+        roundedRect(FLAP_W - bevel * 2, FLAP_D - bevel * 2, r - bevel, 0, cy),
+        { depth: 0.03, bevelEnabled: true, bevelThickness: bevel, bevelSize: bevel, bevelSegments: 4, curveSegments: 12 }
+      );
+      topGeo.rotateX(-Math.PI / 2);
+      const top = makeMesh('flapTop', topGeo, materials.flap);
+      top.position.y = yBase + FLAP_WALL_H;
+      flapPivot.add(top);
+
+      // 앞쪽 손가락 걸이
+      const lip = makeMesh('flapLip', new RoundedBoxGeometry(0.22, 0.045, 0.07, 3, 0.02), materials.flap);
+      lip.position.set(0, yBase + FLAP_WALL_H + 0.01, zBack + FLAP_D + 0.015);
+      flapPivot.add(lip);
+
+      // 뚜껑 쪽 경첩 너클 + 연결부
+      const knuckle = makeMesh('flapKnuckle', new THREE.CylinderGeometry(0.035, 0.035, 0.2, 24), materials.flap);
+      knuckle.rotation.z = Math.PI / 2;
+      flapPivot.add(knuckle);
+      const link = makeMesh('flapHingeLink', new RoundedBoxGeometry(0.2, 0.07, 0.06, 2, 0.02), materials.flap);
+      link.position.set(0, 0.005, 0.03);
+      flapPivot.add(link);
+    }
+
+    // ───────── 빨대 (원점 = 빨대 아래 끝 중심, Y축 이동) ─────────
+    const strawGroup = new THREE.Group();
+    strawGroup.name = 'strawGroup';
+    strawGroup.position.set(0, FLOOR_T + 0.02, STRAW_Z);
+    tumbler.add(strawGroup);
+    const STRAW_REST_Y = strawGroup.position.y;
+    {
+      const R_IN = 0.045, R_OUT = 0.065;
+      const LEN = (CAP_TOP + 0.07) - STRAW_REST_Y;   // 닫힌 상태에서 뚜껑 안에 숨는 길이
+      const mid = (R_IN + R_OUT) / 2, cap = (R_OUT - R_IN) / 2;
+      const p = [];
+      p.push(...arc(mid, cap, cap, Math.PI, Math.PI * 2));
+      p.push(...arc(mid, LEN - cap, cap, 0, Math.PI));
+      p.push(p[0].clone());
+      strawGroup.add(makeMesh('straw', new THREE.LatheGeometry(p, 32), materials.straw));
+    }
+
+    // ───────── 버튼: 이음부와 몸통에 걸친 둥근 정사각형 (원점 = 버튼 기준면, -Z로 눌림) ─────────
+    const buttonGroup = new THREE.Group();
+    buttonGroup.name = 'buttonGroup';
+    buttonGroup.position.set(0, BUTTON_Y, R_BAND);
+    tumbler.add(buttonGroup);
+    const button = makeMesh('button', new RoundedBoxGeometry(BUTTON_SIZE, BUTTON_SIZE, 0.07, 4, 0.03), materials.button);
+    button.position.z = 0.01;
+    buttonGroup.add(button);
+
+    // ───────── 버튼 테두리: 메탈 이음부가 아래로 내려와 버튼을 감싸는 형태 (고정) ─────────
+    {
+      const bv = 0.008;                                   // 베벨 (Shape 바깥으로 이만큼 커짐)
+      const half = BUTTON_SIZE / 2 + BUTTON_GAP + BEZEL_MARGIN;
+      const w = half - bv;
+      const top = (BAND_Y1 - BUTTON_Y) - bv;              // 윗변 = 이음부 윗선
+      const bot = -half + bv;
+      const rb = 0.07, rt = 0.012;                        // 아래 모서리는 크게, 위 모서리는 거의 직각
+
+      const s = new THREE.Shape();
+      s.moveTo(-w + rb, bot);
+      s.lineTo(w - rb, bot);
+      s.quadraticCurveTo(w, bot, w, bot + rb);
+      s.lineTo(w, top - rt);
+      s.quadraticCurveTo(w, top, w - rt, top);
+      s.lineTo(-w + rt, top);
+      s.quadraticCurveTo(-w, top, -w, top - rt);
+      s.lineTo(-w, bot + rb);
+      s.quadraticCurveTo(-w, bot, -w + rb, bot);
+      const holeSize = BUTTON_SIZE + BUTTON_GAP * 2 + bv * 2;   // 베벨만큼 구멍이 줄어드는 것을 보정
+      s.holes.push(roundedRect(holeSize, holeSize, 0.045 + bv));
+
+      const bezelGeo = new THREE.ExtrudeGeometry(s, {
+        depth: 0.05, bevelEnabled: true, bevelThickness: bv, bevelSize: bv, bevelSegments: 3, curveSegments: 16
+      });
+      const bezel = makeMesh('buttonBezel', bezelGeo, materials.band);
+      bezel.position.set(0, BUTTON_Y, R_BAND - 0.042);   // 뒤쪽은 몸통 속에 묻힘
+      tumbler.add(bezel);
+    }
+
+    // ───────── 동작: 흰 버튼 클릭 → 열림 / 다시 클릭 → 원래대로 닫힘 ─────────
+    const state = { open: false, progress: 0, pressStart: -Infinity };
+
+    function setOpen(open) {
+      state.open = open;
+      state.pressStart = performance.now() / 1000;
+    }
+
+    const raycaster = new THREE.Raycaster();
+    const pointer = new THREE.Vector2();
+
+    // 제품 전체에 Raycast해서 가장 앞에 맞은 물체가 버튼일 때만 true
+    // (몸통 뒤에 가려진 버튼이나 배경을 누른 경우는 무시)
+    function isButtonHit(e) {
+      const rect = renderer.domElement.getBoundingClientRect();
+      pointer.set(((e.clientX - rect.left) / rect.width) * 2 - 1, -((e.clientY - rect.top) / rect.height) * 2 + 1);
+      raycaster.setFromCamera(pointer, camera);
+      const hit = raycaster.intersectObject(tumbler, true)[0];
+      return hit?.object === button;
+    }
+
+    let down = null;
+    renderer.domElement.addEventListener('pointerdown', (e) => {
+      down = e.button === 0 ? { x: e.clientX, y: e.clientY } : null;
+    });
+    renderer.domElement.addEventListener('pointerup', (e) => {
+      if (!down) return;
+      const moved = Math.hypot(e.clientX - down.x, e.clientY - down.y);
+      down = null;
+      if (moved > ACTION.dragThreshold) return; // 드래그로 둘러본 뒤 뗀 것은 클릭이 아님
+      if (isButtonHit(e)) setOpen(!state.open);
+    });
+    renderer.domElement.addEventListener('pointermove', (e) => {
+      if (down) return;
+      renderer.domElement.style.cursor = isButtonHit(e) ? 'pointer' : '';
+    });
+
+    const clamp01 = (x) => Math.min(1, Math.max(0, x));
+    const easeInOutCubic = (t) => t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
+    const easeOutCubic = (t) => 1 - Math.pow(1 - t, 3);
+    // 진행도 p를 [start, end] 구간 안에서의 0~1 값으로 변환
+    const phase = (p, [start, end]) => clamp01((p - start) / (end - start));
+
+    const FLAP_ANGLE = THREE.MathUtils.degToRad(ACTION.flapAngleDeg);
+
+    function updateParts(dt, now) {
+      // 진행도: 0 = 닫힘, 1 = 열림. 목표 쪽으로 일정 속도로 이동 (도중에 다시 누르면 그 자리에서 되돌아감)
+      const step = dt / ACTION.duration;
+      state.progress = state.open ? Math.min(1, state.progress + step) : Math.max(0, state.progress - step);
+      const p = state.progress;
+
+      flapPivot.rotation.x = -FLAP_ANGLE * easeInOutCubic(phase(p, ACTION.flapRange));
+      strawGroup.position.y = STRAW_REST_Y + ACTION.strawRise * easeOutCubic(phase(p, ACTION.strawRange));
+
+      // 버튼 눌림 (짧게 들어갔다 나옴)
+      const t = clamp01((now - state.pressStart) / ACTION.buttonPressTime);
+      buttonGroup.position.z = R_BAND - ACTION.buttonPressDepth * Math.sin(t * Math.PI);
+    }
+
+    // ───────── 색상 선택: 몸통·손잡이 Material color만 변경 ─────────
+    const COLOR_TARGETS = [materials.body, materials.handle];
+    const colorNameEl = document.getElementById('color-name');
+    const introColorNameEl = document.getElementById('intro-color-name');
+    const introColorDotEl = document.getElementById('intro-color-dot');
+    const swatchList = document.getElementById('swatches');
+
+    function setColor(index) {
+      const c = COLORS[index];
+      for (const m of COLOR_TARGETS) m.color.set(c.hex);
+      colorNameEl.textContent = c.name;
+      introColorNameEl.textContent = c.name;
+      introColorDotEl.style.setProperty('--dot', c.hex);
+      swatchList.querySelectorAll('.swatch').forEach((el, i) => el.setAttribute('aria-pressed', String(i === index)));
+    }
+
+    COLORS.forEach((c, i) => {
+      const li = document.createElement('li');
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'swatch';
+      btn.style.setProperty('--swatch', c.hex);
+      btn.title = c.name;
+      btn.setAttribute('aria-label', c.name);
+      btn.addEventListener('click', () => setColor(i));
+      li.appendChild(btn);
+      swatchList.appendChild(li);
+    });
+    setColor(0);
+
+    // 나중에 기능을 붙일 때 참조할 부품 (콘솔 확인용)
+    window.tumbler = {
+      root: tumbler, flapPivot, strawGroup, buttonGroup, materials, setColor,
+      open: () => setOpen(true), close: () => setOpen(false), toggle: () => setOpen(!state.open)
+    };
+
+    // ───────── 루프 ─────────
+    // ───────── 화면 배치: 제품이 소개 문구·색상 버튼과 겹치지 않도록 카메라 거리/좌우 위치 조정 ─────────
+    // 열린 상태까지 포함한 제품 윤곽 점들 (화면에 투영해서 차지하는 영역을 계산)
+    const FIT_POINTS = (() => {
+      const pts = [];
+      for (let i = 0; i < 24; i++) {
+        const a = (i / 24) * Math.PI * 2;
+        for (const y of [0, CAP_TOP]) pts.push(new THREE.Vector3(Math.cos(a) * R_CAP, y, Math.sin(a) * R_CAP));
+      }
+      pts.push(new THREE.Vector3(1.58, 2.28, 0), new THREE.Vector3(1.58, 0.67, 0));           // 손잡이 바깥
+      pts.push(new THREE.Vector3(0, CAP_TOP + 0.07 + ACTION.strawRise, STRAW_Z));             // 올라온 빨대 끝
+      const len = (FLAP_BACK_Z - HINGE_Z) + FLAP_D + 0.05;                                     // 젖혀진 뚜껑 끝
+      for (const x of [-FLAP_W / 2, FLAP_W / 2]) for (const y of [-0.04, FLAP_WALL_H + 0.05]) {
+        pts.push(new THREE.Vector3(x, y, len)
+          .applyAxisAngle(new THREE.Vector3(1, 0, 0), -THREE.MathUtils.degToRad(ACTION.flapAngleDeg))
+          .add(new THREE.Vector3(0, HINGE_Y, HINGE_Z)));
+      }
+      return pts;
+    })();
+
+    const introEl = document.querySelector('.intro');
+    const pickerEl = document.querySelector('.color-picker');
+    const BASE_DIST = camera.position.distanceTo(controls.target);
+    let fitDist = BASE_DIST;
+
+    function productScreenRect() {
+      camera.updateMatrixWorld();
+      const W = window.innerWidth, H = window.innerHeight, v = new THREE.Vector3();
+      const r = { left: Infinity, right: -Infinity, top: Infinity, bottom: -Infinity };
+      for (const p of FIT_POINTS) {
+        v.copy(p).project(camera);
+        const x = (v.x + 1) / 2 * W, y = (1 - v.y) / 2 * H;
+        r.left = Math.min(r.left, x); r.right = Math.max(r.right, x);
+        r.top = Math.min(r.top, y); r.bottom = Math.max(r.bottom, y);
+      }
+      return r;
+    }
+
+    function layoutCamera() {
+      const W = window.innerWidth, H = window.innerHeight, M = 16;
+      camera.aspect = W / H;
+      const offset = camera.position.clone().sub(controls.target);
+      const zoomRatio = offset.length() / fitDist;   // 사용자가 휠로 조절한 확대 비율은 유지
+      const dir = offset.normalize();
+      const intro = introEl.getBoundingClientRect();
+      const picker = pickerEl.getBoundingClientRect();
+      const wide = W > 900;
+
+      let d = BASE_DIST, shift = 0;
+      for (let i = 0; i < 40; i++) {
+        camera.position.copy(controls.target).addScaledVector(dir, d);
+        camera.filmOffset = 0;
+        camera.updateProjectionMatrix();
+        const r = productScreenRect();
+        // 넓은 화면: 소개 문구와 겹치면 그만큼 제품을 오른쪽으로 밀어냄
+        shift = wide && r.top < intro.bottom + M ? Math.max(0, intro.right + M * 1.5 - r.left) : 0;
+        r.left += shift; r.right += shift;
+        const fits = r.left >= M && r.right <= W - M && r.top >= M && r.bottom <= H - M
+          && (wide || r.top >= intro.bottom + M)                                  // 좁은 화면: 문구 아래로
+          && !(r.right > picker.left - M && r.bottom > picker.top - M);           // 색상 버튼과 겹치지 않게
+        if (fits) break;
+        d *= 1.05;
+      }
+
+      fitDist = d;
+      // 화면에서 오른쪽으로 shift(px) 이동: filmOffset은 near 평면 너비 기준이므로 화면 비율로 환산
+      const viewWidth = 2 * Math.tan(THREE.MathUtils.degToRad(camera.fov) / 2) * camera.aspect;
+      camera.filmOffset = -(shift / W) * camera.getFilmWidth() * viewWidth;
+      camera.updateProjectionMatrix();
+      controls.maxDistance = Math.max(14, d * 1.6);
+      camera.position.copy(controls.target).addScaledVector(dir,
+        THREE.MathUtils.clamp(d * zoomRatio, controls.minDistance, controls.maxDistance));
+      renderer.setSize(W, H);
+    }
+
+    layoutCamera();
+    window.addEventListener('resize', layoutCamera);
+
+    const clock = new THREE.Clock();
+    renderer.setAnimationLoop(() => {
+      const dt = Math.min(clock.getDelta(), 0.05);
+      updateParts(dt, performance.now() / 1000);
+      controls.update();
+      renderer.render(scene, camera);
+    });
+  </script>
+</body>
+</html>
